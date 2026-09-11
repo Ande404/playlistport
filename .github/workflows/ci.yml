@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.14 is included deliberately: its `site` module skips `.pth` files
+        # whose names begin with "_", which silently breaks editable installs.
+        # CI installs non-editable, so this job proves the package itself is fine.
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[dev]"
+
+      - name: Test
+        # The suite is fully offline: providers are faked and the matcher is
+        # pure, so no API credentials are required.
+        run: pytest -q

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "playlist-tool"
+version = "0.1.0"
+description = "Transfer playlists between Spotify and YouTube Music"
+requires-python = ">=3.11"
+dependencies = [
+    "spotipy>=2.24.0",
+    "ytmusicapi>=1.7.0",
+    "google-api-python-client>=2.140.0",
+    "google-auth-oauthlib>=1.2.0",
+    "python-dotenv>=1.0.1",
+    "rich>=13.7.0",
+    "sqlalchemy>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+playlist-tool = "playlist_tool.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
