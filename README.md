@@ -1,4 +1,4 @@
-# playlist-tool
+# PlaylistPort
 
 Transfer playlists between Spotify and YouTube Music, from the command line, on
 your own machine, with your own API credentials.
@@ -55,8 +55,8 @@ each is covered by tests:
 Requires Python 3.11+.
 
 ```bash
-git clone https://github.com/Ande404/playlist-tool.git
-cd playlist-tool
+git clone https://github.com/Ande404/playlistport.git
+cd playlistport
 python3 -m venv .venv
 .venv/bin/pip install .
 ```
@@ -99,33 +99,33 @@ cp .env.example .env
 ## Usage
 
 ```bash
-playlist-tool auth spotify
-playlist-tool auth youtube
+playlistport auth spotify
+playlistport auth youtube
 
-playlist-tool playlists spotify --mine      # --mine skips followed playlists
+playlistport playlists spotify --mine      # --mine skips followed playlists
 
 # Match only. Writes nothing, costs no YouTube quota.
 # Add --report for a JSON breakdown of every scoring decision.
-playlist-tool transfer --playlist "Roadtrip"
+playlistport transfer --playlist "Roadtrip"
 
 # Resolve ambiguous matches (decisions are cached permanently)
-playlist-tool review 1
+playlistport review 1
 
 # Create the playlist and write the tracks
-playlist-tool transfer --playlist "Roadtrip" --commit
+playlistport transfer --playlist "Roadtrip" --commit
 
-playlist-tool jobs                          # history and state
+playlistport jobs                          # history and state
 ```
 
 Other options:
 
 ```bash
 # Reverse direction, and Liked Songs / saved library
-playlist-tool transfer --source youtube --target spotify --playlist "Mix"
-playlist-tool transfer --saved --limit 50
+playlistport transfer --source youtube --target spotify --playlist "Mix"
+playlistport transfer --saved --limit 50
 
 # Write a JSON match-quality report alongside the run
-playlist-tool transfer --playlist "Roadtrip" --report
+playlistport transfer --playlist "Roadtrip" --report
 ```
 
 `--playlist` accepts an ID, an exact name, or a unique case-insensitive
@@ -144,6 +144,35 @@ substring.
 
 Decisions attach to the **track**, not the job, so answering once settles it for
 every playlist that track appears in.
+
+## YouTube vs YouTube Music
+
+The destination is **YouTube Music**. The API written to is **YouTube**. That is
+not sloppiness — it is the only route available, and it shapes the whole design.
+
+There is no official YouTube Music API. What exists is the YouTube Data API, and
+the two products share one Google account and one playlist store: **a playlist
+created through the YouTube Data API appears in YouTube Music's library.** So
+writes go to YouTube, and the result shows up where you actually want it.
+
+The catch is *what* you write. A playlist item is a video id, and an arbitrary
+video id gives you a video — a lyric upload, a live cut, an 8-hour loop — not a
+song. Searching YouTube proper returns exactly those.
+
+So the two halves address different catalogues on purpose:
+
+| Step | Surface | Why |
+| --- | --- | --- |
+| **Find the track** | YouTube **Music** catalogue, via `ytmusicapi` | Returns song entries with real artist, album and duration fields — and the video ids it returns are music-catalogue entries, so they render as songs |
+| **Write the playlist** | YouTube Data API | The only authenticated write path, and what makes the playlist appear in YouTube Music |
+
+This is why the hybrid exists. The quota arithmetic below reinforces it, but even
+with unlimited quota the search would still go through the music catalogue,
+because searching YouTube proper returns the wrong *kind* of result.
+
+The provider is named `youtube` throughout the code and CLI because that is the
+API surface being authenticated and written to. The catalogue being matched
+against is YouTube Music.
 
 ## The YouTube quota, and why the design is shaped around it
 
@@ -219,7 +248,7 @@ a matcher that is failing.
 ## Architecture
 
 ```
-src/playlist_tool/
+src/playlistport/
   providers/     base.py — the entire contract; spotify.py; youtube.py
   core/          models, normalize, matcher, jobs (fetch → match → review → write)
   db/            SQLAlchemy + SQLite

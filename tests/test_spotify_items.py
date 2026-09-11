@@ -7,8 +7,8 @@ reporting success. These pin the shapes so that cannot recur silently.
 
 import pytest
 
-from playlist_tool.providers.base import ProviderError
-from playlist_tool.providers.spotify import SpotifyProvider
+from playlistport.providers.base import ProviderError
+from playlistport.providers.spotify import SpotifyProvider
 
 TRACK = {
     "id": "abc123",

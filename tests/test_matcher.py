@@ -3,8 +3,8 @@
 No network. These are the fixtures the weights get tuned against.
 """
 
-from playlist_tool.core.matcher import DEFAULT_CONFIG, duration_score, match, score_candidate
-from playlist_tool.core.models import Bucket, Candidate, CanonicalTrack
+from playlistport.core.matcher import DEFAULT_CONFIG, duration_score, match, score_candidate
+from playlistport.core.models import Bucket, Candidate, CanonicalTrack
 
 
 def track(title, artists, duration_ms=200_000, album=None):

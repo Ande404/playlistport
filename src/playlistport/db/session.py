@@ -22,7 +22,7 @@ def init_db():
         return _engine
 
     config = load_config()
-    path = config.data_dir / "playlist_tool.db"
+    path = config.data_dir / "playlistport.db"
     _engine = create_engine(f"sqlite:///{path}", future=True)
 
     @event.listens_for(_engine, "connect")

@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "playlist-tool"
+name = "playlistport"
 version = "0.1.0"
 description = "Transfer playlists between Spotify and YouTube Music"
 requires-python = ">=3.11"
@@ -21,7 +21,7 @@ dependencies = [
 dev = ["pytest>=8.0"]
 
 [project.scripts]
-playlist-tool = "playlist_tool.cli:main"
+playlistport = "playlistport.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

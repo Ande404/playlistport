@@ -6,8 +6,8 @@ real account — which is the point of the provider abstraction.
 
 import pytest
 
-from playlist_tool.core.models import Candidate, CanonicalTrack, PlaylistRef
-from playlist_tool.providers.base import MusicProvider, QuotaExceeded
+from playlistport.core.models import Candidate, CanonicalTrack, PlaylistRef
+from playlistport.providers.base import MusicProvider, QuotaExceeded
 
 
 class FakeSource(MusicProvider):
@@ -93,8 +93,8 @@ def make_tracks(n):
 def db(tmp_path, monkeypatch):
     """Point the engine at a throwaway SQLite file."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    import playlist_tool.config as config_module
-    import playlist_tool.db.session as session_module
+    import playlistport.config as config_module
+    import playlistport.db.session as session_module
 
     monkeypatch.setattr(session_module, "_engine", None)
     monkeypatch.setattr(session_module, "_Session", None)
@@ -105,7 +105,7 @@ def db(tmp_path, monkeypatch):
 
 
 def run_full(source, target, limit=None):
-    from playlist_tool.core.jobs import create_job, fetch_stage, match_stage, write_stage
+    from playlistport.core.jobs import create_job, fetch_stage, match_stage, write_stage
 
     job_id = create_job(source, target, "p1", "Test")
     fetch_stage(source, job_id, limit=limit)
@@ -183,7 +183,7 @@ class TestQuotaPause:
 
         # Next day: quota restored.
         target.quota = None
-        from playlist_tool.core.jobs import write_stage
+        from playlistport.core.jobs import write_stage
 
         result = write_stage(target, job_id)
         assert result["written"] == 6
@@ -201,7 +201,7 @@ class FlakyTarget(FakeTarget):
     def search(self, track, limit=8):
         self.searches += 1
         if self.searches <= self.fail_until:
-            from playlist_tool.providers.base import ProviderError
+            from playlistport.providers.base import ProviderError
 
             raise ProviderError("throttled")
         return super().search(track, limit)
@@ -209,8 +209,8 @@ class FlakyTarget(FakeTarget):
 
 class TestTransientFailures:
     def test_failed_searches_are_retried_on_a_later_run(self, db):
-        from playlist_tool.core.jobs import create_job, fetch_stage, match_stage
-        from playlist_tool.db.models import ItemStatus as S
+        from playlistport.core.jobs import create_job, fetch_stage, match_stage
+        from playlistport.db.models import ItemStatus as S
 
         source = FakeSource(make_tracks(3))
         target = FlakyTarget(fail_until=3)  # whole first pass fails
@@ -237,7 +237,7 @@ class FlakyWriteTarget(FakeTarget):
     def add_tracks(self, playlist_id, track_ids):
         self.attempts += 1
         if self.attempts == self.fail_on:
-            from playlist_tool.providers.base import ProviderError
+            from playlistport.providers.base import ProviderError
 
             raise ProviderError("409 The operation was aborted")
         self.written.extend(track_ids)
@@ -245,8 +245,8 @@ class FlakyWriteTarget(FakeTarget):
 
 class TestWriteFailures:
     def test_job_is_not_completed_while_a_track_failed(self, db):
-        from playlist_tool.db.models import JobStatus, TransferJob
-        from playlist_tool.db.session import get_session
+        from playlistport.db.models import JobStatus, TransferJob
+        from playlistport.db.session import get_session
 
         source = FakeSource(make_tracks(5))
         target = FlakyWriteTarget(fail_on=3)
@@ -259,9 +259,9 @@ class TestWriteFailures:
             assert job.status != JobStatus.COMPLETED.value
 
     def test_failed_write_is_retried_and_completes(self, db):
-        from playlist_tool.core.jobs import write_stage
-        from playlist_tool.db.models import JobStatus, TransferJob
-        from playlist_tool.db.session import get_session
+        from playlistport.core.jobs import write_stage
+        from playlistport.db.models import JobStatus, TransferJob
+        from playlistport.db.session import get_session
 
         source = FakeSource(make_tracks(5))
         target = FlakyWriteTarget(fail_on=3)
@@ -303,9 +303,9 @@ class TestDuplicateTargets:
     def test_duplicates_are_recorded_not_lost(self, db):
         from sqlalchemy import select
 
-        from playlist_tool.db.models import ItemStatus as S
-        from playlist_tool.db.models import TransferItem
-        from playlist_tool.db.session import get_session
+        from playlistport.db.models import ItemStatus as S
+        from playlistport.db.models import TransferItem
+        from playlistport.db.session import get_session
 
         source, target = FakeSource(make_tracks(4)), CollapsingTarget()
         job_id, _ = run_full(source, target)
@@ -328,9 +328,9 @@ class TestDecisionsOutliveJobs:
     def _review_item(self, job_id, index=0):
         from sqlalchemy import select
 
-        from playlist_tool.db.models import ItemStatus as S
-        from playlist_tool.db.models import TransferItem
-        from playlist_tool.db.session import get_session
+        from playlistport.db.models import ItemStatus as S
+        from playlistport.db.models import TransferItem
+        from playlistport.db.session import get_session
 
         with get_session() as session:
             items = list(
@@ -345,9 +345,9 @@ class TestDecisionsOutliveJobs:
 
     def _make_review_job(self, target):
         """A job whose single track lands in needs_review."""
-        from playlist_tool.core.jobs import create_job, fetch_stage, match_stage
-        from playlist_tool.db.models import ItemStatus as S
-        from playlist_tool.db.session import get_session
+        from playlistport.core.jobs import create_job, fetch_stage, match_stage
+        from playlistport.db.models import ItemStatus as S
+        from playlistport.db.session import get_session
 
         source = FakeSource(make_tracks(1))
         job_id = create_job(source, target, "p1", "Test")
@@ -356,7 +356,7 @@ class TestDecisionsOutliveJobs:
         with get_session() as session:
             from sqlalchemy import select
 
-            from playlist_tool.db.models import TransferItem
+            from playlistport.db.models import TransferItem
 
             item = session.scalar(
                 select(TransferItem).where(TransferItem.job_id == job_id)
@@ -365,9 +365,9 @@ class TestDecisionsOutliveJobs:
         return job_id
 
     def test_positive_decision_resolves_a_later_job(self, db):
-        from playlist_tool.core.jobs import apply_cached_decisions, cache_store
-        from playlist_tool.db.models import ItemStatus as S
-        from playlist_tool.db.session import get_session
+        from playlistport.core.jobs import apply_cached_decisions, cache_store
+        from playlistport.db.models import ItemStatus as S
+        from playlistport.db.session import get_session
 
         target = FakeTarget()
         job_id = self._make_review_job(target)
@@ -383,8 +383,8 @@ class TestDecisionsOutliveJobs:
     def test_negative_decision_is_remembered(self, db):
         # "No counterpart exists" was previously recorded nowhere, so the same
         # question came back in the next job.
-        from playlist_tool.core.jobs import apply_cached_decisions, cache_store
-        from playlist_tool.db.session import get_session
+        from playlistport.core.jobs import apply_cached_decisions, cache_store
+        from playlistport.db.session import get_session
 
         target = FakeTarget()
         job_id = self._make_review_job(target)
@@ -397,14 +397,14 @@ class TestDecisionsOutliveJobs:
         assert self._review_item(job_id) is None
 
     def test_negative_decision_prevents_a_new_search(self, db):
-        from playlist_tool.core.jobs import (
+        from playlistport.core.jobs import (
             create_job,
             fetch_stage,
             cache_store,
             match_stage,
         )
-        from playlist_tool.db.models import ItemStatus as S
-        from playlist_tool.db.session import get_session
+        from playlistport.db.models import ItemStatus as S
+        from playlistport.db.session import get_session
 
         target = FakeTarget()
         with get_session() as session:
@@ -422,10 +422,10 @@ class TestDecisionsOutliveJobs:
     def test_already_written_track_is_not_queued_again(self, db):
         # A superseded job must not report phantom pending writes for tracks the
         # job that replaced it already wrote.
-        from playlist_tool.core.jobs import apply_cached_decisions, cache_store
-        from playlist_tool.db.models import ItemStatus as S
-        from playlist_tool.db.models import TransferItem, TransferJob
-        from playlist_tool.db.session import get_session
+        from playlistport.core.jobs import apply_cached_decisions, cache_store
+        from playlistport.db.models import ItemStatus as S
+        from playlistport.db.models import TransferItem, TransferJob
+        from playlistport.db.session import get_session
         from sqlalchemy import select
 
         source, target = FakeSource(make_tracks(1)), FakeTarget()
@@ -451,8 +451,8 @@ class TestDecisionsOutliveJobs:
 
     def test_unverified_cache_does_not_auto_resolve(self, db):
         # Only *human* decisions may skip review; a machine guess must not.
-        from playlist_tool.core.jobs import apply_cached_decisions, cache_store
-        from playlist_tool.db.session import get_session
+        from playlistport.core.jobs import apply_cached_decisions, cache_store
+        from playlistport.db.session import get_session
 
         target = FakeTarget()
         job_id = self._make_review_job(target)
@@ -530,7 +530,7 @@ class TestMatchCache:
         assert target.searches == 5
 
         # A different playlist containing the same tracks costs no searches.
-        from playlist_tool.core.jobs import create_job, fetch_stage, match_stage
+        from playlistport.core.jobs import create_job, fetch_stage, match_stage
 
         source2 = FakeSource(tracks)
         job2 = create_job(source2, target, "p2", "Other")

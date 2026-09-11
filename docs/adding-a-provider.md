@@ -1,6 +1,6 @@
 # Adding a platform
 
-A platform is one file in `src/playlist_tool/providers/`. The matcher, the job
+A platform is one file in `src/playlistport/providers/`. The matcher, the job
 engine and the CLI need no changes — if you find yourself editing them to add a
 platform, the abstraction has leaked and that is worth raising in an issue.
 

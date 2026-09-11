@@ -1,4 +1,4 @@
-from playlist_tool.core.normalize import (
+from playlistport.core.normalize import (
     canonical,
     canonical_artists,
     canonical_title,

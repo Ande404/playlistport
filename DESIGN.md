@@ -1,7 +1,8 @@
-# Playlist Tool — Design
+# PlaylistPort — Design
 
 Transfer playlists between Spotify and YouTube Music for an authorized user who
-holds accounts on both. Local single-user tool first; multi-user web app later.
+holds accounts on both. A self-hosted command-line tool: each user brings their
+own API credentials and their own quota.
 
 ---
 
@@ -24,6 +25,31 @@ That single fact drives every other decision below:
   better the more it is used.
 
 ## 2. Platform constraints
+
+### 2.0 YouTube is the API; YouTube Music is the destination
+
+The target service is **YouTube Music**, but there is no official YouTube Music
+API. The available surface is the YouTube Data API, and the two products share a
+single Google account and a single playlist store: **a playlist created through
+the YouTube Data API is visible in YouTube Music.** That indirection is the only
+route in, and it is why the provider is named `youtube` rather than
+`youtube-music` — it names the API being authenticated and written to.
+
+The consequence is subtler than it first appears. A playlist item is a video id,
+and an arbitrary video id yields a *video* — a lyric upload, a live cut, an
+8-hour loop — rather than a song. Searching YouTube proper returns precisely
+those. Searching the YouTube **Music** catalogue returns song entries whose video
+ids are catalogue entries, which render correctly as songs in YouTube Music.
+
+So the split is not merely a quota optimisation:
+
+- **Search** addresses the YouTube Music catalogue (via `ytmusicapi`) because it
+  is the only way to get the right *kind* of result.
+- **Writes** go through the YouTube Data API because it is the only authenticated
+  write path, and because writing there is what surfaces the playlist in YouTube
+  Music.
+
+Even with unlimited quota, search would still be routed this way.
 
 ### 2.1 YouTube quota — the binding constraint
 
@@ -97,7 +123,7 @@ skipped with an explicit reason recorded, never silently dropped.
 ## 3. Architecture
 
 ```
-src/playlist_tool/
+src/playlistport/
   providers/
     base.py        MusicProvider ABC — the entire contract
     spotify.py     spotipy
@@ -106,10 +132,10 @@ src/playlist_tool/
     models.py      CanonicalTrack, Candidate, MatchResult
     normalize.py   title/artist cleaning, variant-tag detection
     matcher.py     scoring — provider-independent, pure functions
-    jobs.py        fetch -> match -> review -> write state machine   [phase 2]
-  db/              SQLAlchemy + SQLite                               [phase 2]
-  api/             FastAPI                                           [phase 3]
-web/               React + Vite + TanStack Query                     [phase 3]
+    jobs.py        fetch -> match -> review -> write state machine
+    report.py      match-quality reporting over a persisted job
+  db/              SQLAlchemy + SQLite
+  cli.py           five verbs; only `transfer --commit` writes
 ```
 
 ### 3.1 The provider contract
@@ -132,9 +158,9 @@ Apple Music a plugin rather than a rewrite, and what lets the matcher be unit
 tested against fixtures with zero network access.
 
 **Note:** the interface is synchronous. Both `spotipy` and `ytmusicapi` are
-blocking; an async facade over them would be theatre. FastAPI runs sync
-dependencies in a threadpool, and parallelism where it matters (search fan-out)
-uses an explicit `ThreadPoolExecutor`.
+blocking, so an async facade over them would be theatre. Parallelism is applied
+only where it pays — search fan-out and metadata enrichment — using an explicit
+`ThreadPoolExecutor` with modest worker counts, since both platforms throttle.
 
 ### 3.2 Matcher
 
@@ -206,16 +232,41 @@ All scope items land; the sequence front-loads the risky part.
 
 | Phase | Contents |
 | --- | --- |
-| **1** ✅ | Provider interface, Spotify + YouTube **read** paths, matcher, CLI dry-run producing a match-quality report. No writes, no UI. |
-| **2** ✅ | Writes + job engine. Resumable, quota-aware backoff, idempotent via `match_cache`. CLI `transfer` / `jobs` / `review`. |
-| **3** | React UI — playlist picker, live job progress, **review screen**. |
-| **4** | Reverse direction (YT → Spotify). Mostly free if the abstraction held. |
-| **5** | Liked Songs + ongoing sync. |
+| **1** ✅ | Provider interface, Spotify + YouTube **read** paths, matcher, match-quality report. No writes. |
+| **2** ✅ | Writes + job engine. Resumable, quota-aware backoff, idempotent via `match_cache`. |
+| **3** ✅ | Reverse direction (YouTube Music → Spotify), Liked Songs, append-only sync. |
+| **4** ✅ | Open-source release: licence, documentation, CI, single-verb CLI. |
+| **5** | Track removal — the remaining functional gap. The tool only adds. |
 
-**Phase 1 is the go/no-go.** If match rates on real playlists are poor,
-everything downstream is wasted effort. Validate against at least one mainstream
-playlist, one remix/electronic-heavy playlist, and whatever is most obscure in
-the library.
+**Phase 1 was the go/no-go.** If match rates on real playlists had been poor,
+everything downstream would have been wasted effort — hence validating against a
+mainstream playlist, a remix-heavy one, and the most obscure material available
+before building anything that writes.
+
+**A React UI was planned as phase 3 and dropped.** It was load-bearing for two
+things that were subsequently cut: a hosted demo, and Apple Music (whose Music
+User Token can only be obtained through MusicKit JS in a browser). With both
+gone, a partial web frontend would have added surface area without adding
+capability, and the CLI already covers the review flow.
+
+### 4a. Final CLI surface
+
+Five verbs. `transfer` is the only one that can write, and only with `--commit`:
+
+| Command | Purpose |
+| --- | --- |
+| `auth <provider>` | Run the OAuth flow |
+| `playlists <provider>` | List playlists (`--mine` excludes followed) |
+| `transfer` | Match a playlist; `--commit` writes, `--report` emits JSON |
+| `review <job>` | Resolve ambiguous matches |
+| `jobs` | Job history and state |
+
+A separate `dryrun` command existed until phase 4 and was removed. It and
+`transfer` without `--commit` both meant "match without writing", but the deeper
+problem was that `dry_run()` fetched and matched *in memory* — a second pipeline
+running parallel to `fetch_stage`/`match_stage`. The report you inspected was
+produced by different code from the transfer you ran, so the two could disagree.
+Reports now derive from the persisted `transfer_items`.
 
 ## 4b. Phase 1 findings
 
@@ -268,7 +319,7 @@ most between platforms.
 
 ## 4c. Phase 2 findings (first real write)
 
-**Dancehall vibe → YouTube, 182 tracks.** 176 matched, 6 sent to review, 0
+**Dancehall vibe → YouTube Music, 182 tracks.** 176 matched, 6 sent to review, 0
 absent. Verified by reading the playlist back from YouTube: **176 tracks
 present**, ~8,900 quota units consumed.
 

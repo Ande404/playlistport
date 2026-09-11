@@ -1,9 +1,9 @@
 """Phase 1 CLI.
 
-    python -m playlist_tool auth spotify
-    python -m playlist_tool auth youtube
-    python -m playlist_tool playlists spotify
-    python -m playlist_tool dryrun --source spotify --target youtube --playlist "Roadtrip"
+    python -m playlistport auth spotify
+    python -m playlistport auth youtube
+    python -m playlistport playlists spotify
+    python -m playlistport dryrun --source spotify --target youtube --playlist "Roadtrip"
 """
 
 from __future__ import annotations
@@ -385,7 +385,7 @@ def cmd_review(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="playlist_tool")
+    parser = argparse.ArgumentParser(prog="playlistport")
     sub = parser.add_subparsers(dest="command", required=True)
 
     auth = sub.add_parser("auth", help="authorize a provider")
