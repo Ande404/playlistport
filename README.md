@@ -1,3 +1,15 @@
+<p align="center">
+  <img src="docs/playlist-logo.jpeg" alt="PlaylistPort — cross-platform playlist transfer" width="440">
+</p>
+
+<p align="center">
+  <a href="https://github.com/Ande404/playlistport/actions/workflows/ci.yml">
+    <img src="https://github.com/Ande404/playlistport/actions/workflows/ci.yml/badge.svg" alt="CI">
+  </a>
+  <img src="https://img.shields.io/badge/python-3.11%20%E2%80%93%203.14-blue" alt="Python 3.11-3.14">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT licence">
+</p>
+
 # PlaylistPort
 
 Transfer playlists between Spotify and YouTube Music, from the command line, on
