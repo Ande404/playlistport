@@ -22,6 +22,7 @@ from sqlalchemy import select
 
 from .config import REPO_ROOT, load_config
 from .core import report
+from .core.dedupe import find_duplicates, group_duplicates
 from .core.jobs import (
     apply_cached_decisions,
     cache_store,
@@ -257,6 +258,72 @@ def cmd_transfer(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_dedupe(args: argparse.Namespace) -> int:
+    """Remove repeated occurrences of the same track from a playlist."""
+    provider = get_provider(args.provider)
+    if not provider.supports_removal:
+        console.print(f"[red]{provider.name} does not support removal.[/]")
+        return 1
+
+    ref = provider.resolve_playlist(args.playlist)
+    console.print(f"Reading [bold]{ref.name}[/] from {provider.name}…")
+    entries = provider.list_entries(ref.id)
+    groups = group_duplicates(entries)
+    extras = find_duplicates(entries)
+
+    if not extras:
+        console.print(
+            f"[green]No duplicates.[/] {len(entries)} entries, all distinct."
+        )
+        return 0
+
+    table = Table(title=f"Duplicates in {ref.name}")
+    table.add_column("Track", style="bold", max_width=46, overflow="ellipsis")
+    table.add_column("Copies", justify="right")
+    table.add_column("Keep", justify="right")
+    table.add_column("Remove", justify="right")
+    for occurrences in groups.values():
+        table.add_row(
+            occurrences[0].label or occurrences[0].track_id,
+            str(len(occurrences)),
+            str(occurrences[0].position),
+            ", ".join(str(o.position) for o in occurrences[1:]),
+        )
+    console.print(table)
+    console.print(
+        f"{len(entries)} entries · {len(groups)} track(s) duplicated · "
+        f"[bold]{len(extras)}[/] occurrence(s) would be removed. "
+        "The earliest copy of each is kept."
+    )
+
+    if not args.commit:
+        console.print("\n[yellow]Nothing removed.[/] Re-run with [bold]--commit[/].")
+        return 0
+
+    # Deletion is irreversible and, on YouTube, expensive.
+    if not args.yes:
+        cost = ""
+        if provider.name == "youtube":
+            cost = f" That costs ~{len(extras) * 50} YouTube quota units."
+        console.print(
+            f"\n[bold]Permanently remove {len(extras)} occurrence(s)[/] from "
+            f"{ref.name} on {provider.name}?{cost}"
+        )
+        if input("Proceed? [y/N] ").strip().lower() not in {"y", "yes"}:
+            console.print("Aborted.")
+            return 1
+
+    provider.remove_entries(ref.id, extras)
+    console.print(f"[green]Removed {len(extras)} occurrence(s).[/]")
+
+    remaining = provider.list_entries(ref.id)
+    console.print(
+        f"{ref.name} now has {len(remaining)} entries, "
+        f"{len({e.track_id for e in remaining})} distinct."
+    )
+    return 0
+
+
 def cmd_jobs(args: argparse.Namespace) -> int:
     with get_session() as session:
         jobs = list(session.scalars(select(TransferJob).order_by(TransferJob.id.desc())))
@@ -435,6 +502,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     jobs = sub.add_parser("jobs", help="list transfer jobs")
     jobs.set_defaults(func=cmd_jobs)
+
+    dedupe = sub.add_parser(
+        "dedupe",
+        help="remove repeated occurrences of a track from a playlist",
+        description=(
+            "Finds tracks appearing more than once in a playlist and removes the "
+            "extra occurrences, keeping the earliest. Nothing is removed unless "
+            "--commit is given."
+        ),
+    )
+    dedupe.add_argument("--provider", default="youtube")
+    dedupe.add_argument(
+        "--playlist", required=True, help="playlist ID, exact name, or substring"
+    )
+    dedupe.add_argument(
+        "--commit", action="store_true", help="actually remove the duplicates"
+    )
+    dedupe.add_argument("--yes", action="store_true", help="skip the confirmation")
+    dedupe.set_defaults(func=cmd_dedupe)
 
     review = sub.add_parser("review", help="resolve ambiguous matches for a job")
     review.add_argument("job", type=int)

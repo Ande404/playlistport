@@ -60,7 +60,7 @@ each is covered by tests:
 | **Quota-aware** | Hitting YouTube's daily ceiling *pauses* a job with its remaining work intact. Re-run the next day to continue. |
 | **Append-only** | Re-running adds new tracks and never removes anything you added to the target by hand. |
 | **Self-improving** | Every confident match and every review decision — including "no match exists" — is cached and reused across playlists forever. |
-| **De-duplicated** | Distinct source tracks that resolve to the same target video are written once. |
+| **De-duplicated** | Distinct source tracks that resolve to the same target video are written once, and `dedupe` cleans up playlists written before that guard existed. |
 
 ## Install
 
@@ -138,6 +138,10 @@ playlistport transfer --saved --limit 50
 
 # Write a JSON match-quality report alongside the run
 playlistport transfer --playlist "Roadtrip" --report
+
+# Remove repeated occurrences of a track (keeps the earliest copy)
+playlistport dedupe --playlist "Roadtrip"
+playlistport dedupe --playlist "Roadtrip" --commit
 ```
 
 `--playlist` accepts an ID, an exact name, or a unique case-insensitive
@@ -299,8 +303,10 @@ Stated plainly, because they are properties of the platforms:
   span days; jobs pause and resume automatically.
 - **Spotify apps are capped at 25 users** in development mode, which is why this
   is a self-hosted tool and not a hosted service.
-- **No track removal.** The tool only adds. Removing a track from a target
-  playlist must be done by hand.
+- **Sync is append-only.** Removing a track from the source does not remove it
+  from the target. This is deliberate: treating the source as absolute truth
+  would delete tracks you added to the target by hand, which is unrecoverable.
+  Use `dedupe` for the one removal case the tool automates.
 - **`ytmusicapi` is unofficial** and can break when YouTube changes. It is
   isolated behind the provider interface and never receives credentials.
 

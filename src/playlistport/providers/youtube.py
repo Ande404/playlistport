@@ -23,7 +23,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from ..config import load_config
-from ..core.models import Candidate, CanonicalTrack, PlaylistRef
+from ..core.models import Candidate, CanonicalTrack, PlaylistEntry, PlaylistRef
 from ..core.normalize import canonical_title, search_terms, split_artists
 from .base import AuthRequired, MusicProvider, ProviderError, QuotaExceeded
 
@@ -464,6 +464,58 @@ class YouTubeProvider(MusicProvider):
                         }
                     },
                 ),
+                COST_INSERT,
+            )
+
+    # -- removal ------------------------------------------------------------
+
+    supports_removal = True
+
+    def list_entries(self, playlist_id: str) -> list[PlaylistEntry]:
+        """Raw occurrences, each with its own playlistItem id.
+
+        Deletion needs the item id rather than the video id, and a video
+        appearing three times has three distinct item ids — which is exactly
+        what makes de-duplication possible.
+        """
+        entries: list[PlaylistEntry] = []
+        page_token = None
+        position = 0
+        while True:
+            response = self._execute(
+                self.youtube.playlistItems().list(
+                    part="snippet,contentDetails",
+                    playlistId=playlist_id,
+                    maxResults=50,
+                    pageToken=page_token,
+                ),
+                COST_LIST,
+            )
+            for item in response.get("items", []):
+                video_id = item["contentDetails"].get("videoId")
+                if video_id:
+                    entries.append(
+                        PlaylistEntry(
+                            entry_id=item["id"],
+                            track_id=video_id,
+                            position=position,
+                            label=item["snippet"].get("title") or "",
+                        )
+                    )
+                position += 1
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                return entries
+
+    def remove_entries(self, playlist_id: str, entries: list[PlaylistEntry]) -> None:
+        """Delete occurrences one at a time — 50 quota units each.
+
+        Item ids are stable, so deleting one does not invalidate the others and
+        order does not matter.
+        """
+        for entry in entries:
+            self._execute(
+                self.youtube.playlistItems().delete(id=entry.entry_id),
                 COST_INSERT,
             )
 

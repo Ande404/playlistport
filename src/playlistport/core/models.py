@@ -52,6 +52,24 @@ class PlaylistRef:
     is_owned: bool = True
 
 
+@dataclass(frozen=True)
+class PlaylistEntry:
+    """One *occurrence* of a track in a playlist.
+
+    Not the same thing as a track: the same recording can sit in a playlist
+    three times, and removing "the track" is ambiguous when it does. Platforms
+    address occurrences incompatibly — YouTube gives each one its own
+    playlistItem id, while Spotify has no per-entry id and identifies an
+    occurrence by URI plus position — so `entry_id` is deliberately opaque and
+    only its own provider may interpret it.
+    """
+
+    entry_id: str
+    track_id: str
+    position: int
+    label: str = ""
+
+
 @dataclass
 class CanonicalTrack:
     """A track as the rest of the system understands it."""

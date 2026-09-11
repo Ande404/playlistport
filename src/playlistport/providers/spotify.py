@@ -8,7 +8,7 @@ import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
 from ..config import load_config
-from ..core.models import Candidate, CanonicalTrack, PlaylistRef
+from ..core.models import Candidate, CanonicalTrack, PlaylistEntry, PlaylistRef
 from ..core.normalize import canonical_isrc, search_terms
 from .base import AuthRequired, MusicProvider, ProviderError
 
@@ -251,6 +251,59 @@ class SpotifyProvider(MusicProvider):
             user_id, name, public=False, description=description
         )
         return playlist["id"]
+
+    # -- removal ------------------------------------------------------------
+
+    supports_removal = True
+
+    def list_entries(self, playlist_id: str) -> list[PlaylistEntry]:
+        """Raw occurrences. Spotify has no per-entry id, so position is the handle."""
+        page = self.client.playlist_items(
+            playlist_id, limit=100, additional_types=("track",)
+        )
+        entries: list[PlaylistEntry] = []
+        for position, item in enumerate(self._paginate(page)):
+            track = item.get("track") or item.get("item")
+            if not track or not track.get("id"):
+                continue
+            artists = ", ".join(
+                a["name"] for a in track.get("artists", []) if a.get("name")
+            )
+            entries.append(
+                PlaylistEntry(
+                    entry_id=str(position),
+                    track_id=track["id"],
+                    position=position,
+                    label=f"{track.get('name', '')} — {artists}",
+                )
+            )
+        return entries
+
+    def remove_entries(self, playlist_id: str, entries: list[PlaylistEntry]) -> None:
+        """Remove specific occurrences by position.
+
+        Positions shift as items are deleted, so every position is sent in a
+        single request evaluated against one snapshot. Passing `snapshot_id`
+        makes the server reject the whole call if the playlist changed
+        underneath us, rather than silently deleting the wrong rows.
+        """
+        if not entries:
+            return
+        snapshot = self.client.playlist(playlist_id, fields="snapshot_id").get(
+            "snapshot_id"
+        )
+        by_track: dict[str, list[int]] = {}
+        for entry in entries:
+            by_track.setdefault(entry.track_id, []).append(entry.position)
+
+        items = [
+            {"uri": f"spotify:track:{track_id}", "positions": sorted(positions)}
+            for track_id, positions in by_track.items()
+        ]
+        for start in range(0, len(items), ADD_BATCH):
+            self.client.playlist_remove_specific_occurrences_of_items(
+                playlist_id, items[start : start + ADD_BATCH], snapshot_id=snapshot
+            )
 
     def add_tracks(self, playlist_id: str, track_ids: list[str]) -> None:
         uris = [

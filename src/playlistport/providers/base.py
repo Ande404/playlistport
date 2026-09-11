@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from ..core.models import Candidate, CanonicalTrack, PlaylistRef
+from ..core.models import Candidate, CanonicalTrack, PlaylistEntry, PlaylistRef
 
 
 class ProviderError(RuntimeError):
@@ -80,6 +80,24 @@ class MusicProvider(ABC):
     @abstractmethod
     def add_tracks(self, playlist_id: str, track_ids: list[str]) -> None:
         """Append tracks, batching as the platform requires."""
+
+    # -- removal ------------------------------------------------------------
+
+    #: Whether this platform can remove individual playlist entries.
+    supports_removal: bool = False
+
+    def list_entries(self, playlist_id: str) -> list[PlaylistEntry]:
+        """Every occurrence in the playlist, in order.
+
+        Distinct from `get_tracks`, which yields matchable tracks and drops
+        unusable rows. Removal needs the opposite: the raw occurrences,
+        including duplicates, because that is what is being deleted.
+        """
+        raise ProviderError(f"{self.name} does not support listing entries")
+
+    def remove_entries(self, playlist_id: str, entries: list[PlaylistEntry]) -> None:
+        """Delete specific occurrences. Entries must come from `list_entries`."""
+        raise ProviderError(f"{self.name} does not support removal")
 
     # -- helpers ------------------------------------------------------------
 

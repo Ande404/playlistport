@@ -134,8 +134,10 @@ src/playlistport/
     matcher.py     scoring — provider-independent, pure functions
     jobs.py        fetch -> match -> review -> write state machine
     report.py      match-quality reporting over a persisted job
+    dedupe.py      duplicate occurrences in a target playlist
   db/              SQLAlchemy + SQLite
-  cli.py           five verbs; only `transfer --commit` writes
+  cli.py           six verbs; only `transfer` and `dedupe` change anything,
+                   and only with --commit
 ```
 
 ### 3.1 The provider contract
@@ -148,7 +150,23 @@ class MusicProvider(ABC):
     def search(track: CanonicalTrack) -> list[Candidate]
     def create_playlist(name, description) -> str
     def add_tracks(playlist_id, ids) -> None
+
+    # optional, declared by capability flags
+    supports_isrc_lookup = False
+    supports_removal = False
+    def lookup_by_isrc(isrc) -> Candidate | None
+    def list_entries(playlist_id) -> list[PlaylistEntry]
+    def remove_entries(playlist_id, entries) -> None
 ```
+
+**Removal is modelled on occurrences, not tracks.** The same recording can sit
+in a playlist three times, so "remove the track" is ambiguous when it matters
+most. Platforms address occurrences incompatibly — YouTube gives each its own
+`playlistItem` id, Spotify has no per-entry id and identifies one by URI plus
+position — so `PlaylistEntry.entry_id` is opaque and only its own provider may
+interpret it. Spotify's removal additionally sends every position in a single
+request against a captured `snapshot_id`, so a playlist edited underneath us
+fails the whole call rather than deleting the wrong rows.
 
 `CanonicalTrack = {title, artists[], album, duration_ms, isrc?, source_id,
 source_provider}`.
@@ -236,7 +254,7 @@ All scope items land; the sequence front-loads the risky part.
 | **2** ✅ | Writes + job engine. Resumable, quota-aware backoff, idempotent via `match_cache`. |
 | **3** ✅ | Reverse direction (YouTube Music → Spotify), Liked Songs, append-only sync. |
 | **4** ✅ | Open-source release: licence, documentation, CI, single-verb CLI. |
-| **5** | Track removal — the remaining functional gap. The tool only adds. |
+| **5** ✅ | Track removal: `dedupe` removes repeated occurrences of a track. |
 
 **Phase 1 was the go/no-go.** If match rates on real playlists had been poor,
 everything downstream would have been wasted effort — hence validating against a
@@ -260,6 +278,7 @@ Five verbs. `transfer` is the only one that can write, and only with `--commit`:
 | `transfer` | Match a playlist; `--commit` writes, `--report` emits JSON |
 | `review <job>` | Resolve ambiguous matches |
 | `jobs` | Job history and state |
+| `dedupe` | Remove repeated occurrences from a playlist; `--commit` deletes |
 
 A separate `dryrun` command existed until phase 4 and was removed. It and
 `transfer` without `--commit` both meant "match without writing", but the deeper
