@@ -361,6 +361,15 @@ Three bugs the live write exposed, none of which the fakes could have:
 The third is inherent to cross-platform mapping and will recur on any platform
 pair, so dedupe belongs in the engine rather than in a provider.
 
+**Playlist reads are eventually consistent after a write.** `dedupe` originally
+re-listed the playlist straight after deleting, to report the result. On the
+first real run that verification announced 4 duplicates still present; a fresh
+read seconds later showed none, and the deletion had in fact been perfectly
+correct. Confirming a destructive operation against eventually consistent data
+produces a confidently wrong answer, which is worse than not confirming at all —
+so the immediate re-read was removed in favour of reporting what was deleted and
+inviting a separate verification run.
+
 **Reading a YouTube playlist was also the slowest operation in the system** —
 180 tracks took over four minutes, because enrichment is one serial ytmusicapi
 call per track. Fanned out over 6 workers: **67s**. The retry added at the same

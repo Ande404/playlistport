@@ -314,12 +314,18 @@ def cmd_dedupe(args: argparse.Namespace) -> int:
             return 1
 
     provider.remove_entries(ref.id, extras)
-    console.print(f"[green]Removed {len(extras)} occurrence(s).[/]")
-
-    remaining = provider.list_entries(ref.id)
     console.print(
-        f"{ref.name} now has {len(remaining)} entries, "
-        f"{len({e.track_id for e in remaining})} distinct."
+        f"[green]Removed {len(extras)} occurrence(s)[/] from {ref.name}. "
+        f"{len(entries) - len(extras)} entries remain."
+    )
+    # Deliberately not re-listing to confirm: a read immediately after deletion
+    # returns a stale view (observed reporting 4 duplicates still present when a
+    # fresh read seconds later showed none). Verifying against eventually
+    # consistent data produces a confidently wrong answer, which is worse than
+    # not verifying at all.
+    console.print(
+        "[dim]Re-run without --commit to verify; the platform takes a moment to "
+        "reflect deletions.[/]"
     )
     return 0
 
