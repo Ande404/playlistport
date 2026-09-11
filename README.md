@@ -55,7 +55,7 @@ each is covered by tests:
 Requires Python 3.11+.
 
 ```bash
-git clone <your-fork-url> playlist-tool
+git clone https://github.com/Ande404/playlist-tool.git
 cd playlist-tool
 python3 -m venv .venv
 .venv/bin/pip install .
@@ -105,6 +105,7 @@ playlist-tool auth youtube
 playlist-tool playlists spotify --mine      # --mine skips followed playlists
 
 # Match only. Writes nothing, costs no YouTube quota.
+# Add --report for a JSON breakdown of every scoring decision.
 playlist-tool transfer --playlist "Roadtrip"
 
 # Resolve ambiguous matches (decisions are cached permanently)
@@ -123,8 +124,8 @@ Other options:
 playlist-tool transfer --source youtube --target spotify --playlist "Mix"
 playlist-tool transfer --saved --limit 50
 
-# Match-quality report as JSON, without creating a job
-playlist-tool dryrun --playlist "Roadtrip"
+# Write a JSON match-quality report alongside the run
+playlist-tool transfer --playlist "Roadtrip" --report
 ```
 
 `--playlist` accepts an ID, an exact name, or a unique case-insensitive

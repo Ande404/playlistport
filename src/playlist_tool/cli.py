@@ -21,7 +21,7 @@ from rich.table import Table
 from sqlalchemy import select
 
 from .config import REPO_ROOT, load_config
-from .core.dryrun import SAVED_TRACKS, DryRunReport, dry_run
+from .core import report
 from .core.jobs import (
     apply_cached_decisions,
     cache_store,
@@ -30,7 +30,7 @@ from .core.jobs import (
     match_stage,
     write_stage,
 )
-from .core.models import Bucket
+from .core.models import SAVED_TRACKS
 from .db.models import ItemStatus, JobStatus, TransferItem, TransferJob
 from .db.session import get_session
 from .providers import get_provider
@@ -38,11 +38,6 @@ from .providers.base import ProviderError
 
 console = Console()
 
-BUCKET_STYLE = {
-    Bucket.AUTO: "green",
-    Bucket.REVIEW: "yellow",
-    Bucket.UNMATCHED: "red",
-}
 
 
 def cmd_auth(args: argparse.Namespace) -> int:
@@ -92,47 +87,49 @@ def cmd_playlists(args: argparse.Namespace) -> int:
     return 0
 
 
-def _print_summary(report: DryRunReport) -> None:
+def _print_summary(job) -> None:
+    counts = report.bucket_counts(job)
+    total = len(job.items)
+
     table = Table(title="Match quality")
-    table.add_column("Bucket")
-    table.add_column("Count", justify="right")
+    table.add_column("Outcome")
+    table.add_column("Tracks", justify="right")
     table.add_column("Share", justify="right")
-    for bucket in (Bucket.AUTO, Bucket.REVIEW, Bucket.UNMATCHED):
-        rows = report.bucket(bucket)
-        share = len(rows) / report.total if report.total else 0.0
+    for bucket in (
+        "matched",
+        "written",
+        "needs_review",
+        "absent",
+        "skipped",
+        "failed",
+        "pending",
+    ):
+        if not counts.get(bucket):
+            continue
+        style = report.BUCKET_STYLE[bucket]
         table.add_row(
-            f"[{BUCKET_STYLE[bucket]}]{bucket.value}[/]",
-            str(len(rows)),
-            f"{share:.1%}",
+            f"[{style}]{bucket}[/]",
+            str(counts[bucket]),
+            f"{counts[bucket] / total:.1%}" if total else "-",
         )
-    if report.errors:
-        table.add_row("[red]errors[/]", str(len(report.errors)), "")
     console.print(table)
 
-    absent = [r for r in report.results if r.reason == "absent"]
-    if absent:
+    if counts.get("absent"):
         console.print(
-            f"[dim]{len(absent)} of those found nothing resembling the track — "
-            f"most likely not in {report.target_provider}'s catalog (DJ sets, "
-            "live uploads, non-music video). Review cannot recover these; the "
-            "JSON report lists them with reason=\"absent\".[/]"
+            f"[dim]{counts['absent']} found nothing resembling the track — most "
+            f"likely not in {job.target_provider}'s catalog (DJ sets, live "
+            "uploads, non-music video). Review cannot recover these.[/]"
         )
     console.print(
-        f"Auto-match rate [bold]{report.auto_rate:.1%}[/] · "
-        f"reachable coverage [bold]{report.coverage:.1%}[/] "
-        f"(auto + reviewable) across {report.total} tracks"
+        f"Auto-match rate [bold]{report.auto_rate(job):.1%}[/] · "
+        f"reachable coverage [bold]{report.coverage(job):.1%}[/] "
+        f"(auto + reviewable) across {total} tracks"
     )
 
 
-def _print_attention(report: DryRunReport) -> None:
+def _print_attention(job) -> None:
     """Show what a human would actually have to look at."""
-    # Tracks the target platform does not carry are listed separately: they are
-    # a final answer, not a task.
-    rows = [
-        r
-        for r in report.bucket(Bucket.REVIEW) + report.bucket(Bucket.UNMATCHED)
-        if r.reason != "absent"
-    ]
+    rows = report.resolvable(job)
     if not rows:
         console.print("[green]Nothing needs review.[/]")
         return
@@ -141,69 +138,32 @@ def _print_attention(report: DryRunReport) -> None:
     table.add_column("Source", style="bold", max_width=42)
     table.add_column("Best guess", max_width=42)
     table.add_column("Score", justify="right")
-    table.add_column("Why", style="dim", max_width=46)
-    for result in sorted(rows, key=lambda r: r.score, reverse=True):
-        style = BUCKET_STYLE[result.bucket]
+    table.add_column("Why", style="dim", max_width=30)
+    for item in sorted(rows, key=lambda i: i.score, reverse=True):
         table.add_row(
-            result.source.display(),
-            result.best.display() if result.best else "[red]no candidates[/]",
-            f"[{style}]{result.score:.2f}[/]",
-            result.explain(),
+            item.source_label,
+            item.target_label or "[red]no candidates[/]",
+            f"{item.score:.2f}",
+            item.error or item.reason or "",
         )
     console.print(table)
 
 
-def cmd_dryrun(args: argparse.Namespace) -> int:
-    source = get_provider(args.source)
-    target = get_provider(args.target)
-
-    if args.saved:
-        playlist_id, playlist_name = SAVED_TRACKS, "Liked Songs"
-        console.print(f"Reading [bold]{playlist_name}[/] from {source.name}…")
-    else:
-        ref = source.resolve_playlist(args.playlist)
-        playlist_id, playlist_name = ref.id, ref.name
-        count = "?" if ref.track_count is None else ref.track_count
-        console.print(
-            f"Reading [bold]{ref.name}[/] ({count} tracks) from {source.name}…"
-        )
-
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TextColumn("{task.completed}/{task.total}"),
-        console=console,
-    ) as progress:
-        task = progress.add_task(f"Matching against {target.name}", total=None)
-
-        def on_progress(done: int, total: int) -> None:
-            progress.update(task, completed=done, total=total)
-
-        report = dry_run(
-            source=source,
-            target=target,
-            playlist_id=playlist_id,
-            playlist_name=playlist_name,
-            limit=args.limit,
-            workers=args.workers,
-            on_progress=on_progress,
-        )
-
-    _print_summary(report)
-    _print_attention(report)
-
-    out_dir = Path(args.out) if args.out else REPO_ROOT / "reports"
+def _write_report(job, out: str | None) -> None:
+    out_dir = Path(out) if out else REPO_ROOT / "reports"
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    safe_name = "".join(c if c.isalnum() else "-" for c in playlist_name).strip("-")
-    out_file = out_dir / f"{stamp}-{source.name}-to-{target.name}-{safe_name}.json"
-    out_file.write_text(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
-    console.print(f"\nFull report: [bold]{out_file.relative_to(REPO_ROOT)}[/]")
-
-    if getattr(target, "quota_used", 0):
-        console.print(f"[dim]YouTube quota used this run: {target.quota_used} units[/]")
-    return 0
+    safe = "".join(c if c.isalnum() else "-" for c in job.source_playlist_name)
+    path = (
+        out_dir
+        / f"{stamp}-{job.source_provider}-to-{job.target_provider}-{safe.strip('-')}.json"
+    )
+    path.write_text(json.dumps(report.to_dict(job), indent=2, ensure_ascii=False))
+    try:
+        shown = path.relative_to(REPO_ROOT)
+    except ValueError:
+        shown = path
+    console.print(f"\nFull report: [bold]{shown}[/]")
 
 
 def cmd_transfer(args: argparse.Namespace) -> int:
@@ -239,7 +199,13 @@ def cmd_transfer(args: argparse.Namespace) -> int:
         counts = match_stage(source, target, job_id, workers=args.workers,
                              on_progress=on_progress)
 
-    _print_job_counts(counts)
+    with get_session() as session:
+        job = session.get(TransferJob, job_id)
+        _print_summary(job)
+        if args.verbose or not args.commit:
+            _print_attention(job)
+        if args.report is not None:
+            _write_report(job, args.report or None)
 
     if not args.commit:
         console.print(
@@ -289,16 +255,6 @@ def cmd_transfer(args: argparse.Namespace) -> int:
             f"left. Re-run 'transfer' tomorrow to resume job #{job_id}.[/]"
         )
     return 0
-
-
-def _print_job_counts(counts: dict[str, int]) -> None:
-    table = Table(title="Job status")
-    table.add_column("State")
-    table.add_column("Tracks", justify="right")
-    for status in ItemStatus:
-        if counts.get(status.value):
-            table.add_row(status.value, str(counts[status.value]))
-    console.print(table)
 
 
 def cmd_jobs(args: argparse.Namespace) -> int:
@@ -443,19 +399,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     playlists.set_defaults(func=cmd_playlists)
 
-    dry = sub.add_parser("dryrun", help="match a playlist without writing anything")
-    dry.add_argument("--source", default="spotify")
-    dry.add_argument("--target", default="youtube")
-    dry.add_argument("--playlist", help="playlist ID, exact name, or unique substring")
-    dry.add_argument(
-        "--saved", action="store_true", help="use Liked Songs instead of a playlist"
+    transfer = sub.add_parser(
+        "transfer",
+        help="match a playlist; writes only with --commit",
+        description=(
+            "Matches a playlist against the target platform and saves the result "
+            "as a resumable job. Nothing is written to the target platform unless "
+            "--commit is given."
+        ),
     )
-    dry.add_argument("--limit", type=int, help="only match the first N tracks")
-    dry.add_argument("--workers", type=int, default=6)
-    dry.add_argument("--out", help="directory for the JSON report")
-    dry.set_defaults(func=cmd_dryrun)
-
-    transfer = sub.add_parser("transfer", help="match and (with --commit) write")
     transfer.add_argument("--source", default="spotify")
     transfer.add_argument("--target", default="youtube")
     transfer.add_argument("--playlist", help="playlist ID, exact name, or substring")
@@ -467,6 +419,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--commit", action="store_true", help="actually write to the target platform"
     )
     transfer.add_argument("--yes", action="store_true", help="skip the confirmation")
+    transfer.add_argument(
+        "--report",
+        nargs="?",
+        const="",
+        metavar="DIR",
+        help="write a JSON match-quality report (default: ./reports)",
+    )
+    transfer.add_argument(
+        "--verbose",
+        action="store_true",
+        help="list ambiguous tracks even when committing",
+    )
     transfer.set_defaults(func=cmd_transfer)
 
     jobs = sub.add_parser("jobs", help="list transfer jobs")
@@ -481,7 +445,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.command in {"dryrun", "transfer"} and not args.playlist and not args.saved:
+    if args.command == "transfer" and not args.playlist and not args.saved:
         console.print("[red]Pass --playlist NAME or --saved.[/]")
         return 2
     try:

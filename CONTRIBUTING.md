@@ -16,7 +16,7 @@ non-editable.
 
 **Evidence over assertion.** Match-quality claims should come with numbers and a
 sample size. If you change scoring, report the before and after across a real
-playlist set — `dryrun` writes a JSON report per run for exactly this.
+playlist set — `transfer --report` writes a JSON report for exactly this.
 
 **Failing loudly over degrading quietly.** The worst bugs found here were all
 silent: a truncated read reported as success, a job marked complete with a failed
@@ -60,6 +60,6 @@ first.
 
 ## Reporting match-quality problems
 
-Include the JSON report from `dryrun` — it carries per-track score components
+Include the JSON report from `transfer --report` — it carries score components
 and the alternatives considered, which is what makes a bad match diagnosable
 rather than anecdotal. Redact playlist names if you would rather not share them.

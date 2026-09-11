@@ -10,6 +10,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 
+#: Sentinel playlist id meaning "the user's Liked Songs / saved library".
+SAVED_TRACKS = "__saved__"
+
 #: Below this, the best candidate bears no real resemblance to the source and
 #: the track is reported as absent from the target platform rather than as
 #: something a human could usefully review. Search engines rarely return
