@@ -28,6 +28,7 @@ from .core.jobs import (
     cache_store,
     create_job,
     fetch_stage,
+    finalize_job,
     match_stage,
     write_stage,
 )
@@ -217,7 +218,11 @@ def cmd_transfer(args: argparse.Namespace) -> int:
 
     ready = counts.get(ItemStatus.MATCHED.value, 0)
     if not ready:
-        console.print("[yellow]No confident matches to write.[/]")
+        status = finalize_job(job_id)
+        if status == JobStatus.COMPLETED.value:
+            console.print("[green]Nothing left to write — job complete.[/]")
+        else:
+            console.print("[yellow]No confident matches to write.[/]")
         return 0
 
     # Writing creates a playlist on a real account, so confirm unless told not to.

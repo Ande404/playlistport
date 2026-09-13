@@ -368,6 +368,9 @@ class YouTubeProvider(MusicProvider):
         """
         title = search_terms(track.title, track.artists) or track.title
         query = f"{title} {track.primary_artist}".strip()
+        # An empty query is rejected with HTTP 400, not an empty result set.
+        if not query:
+            return []
 
         candidates = self._search_raw(query, "songs", limit)
         if len(candidates) < 3:

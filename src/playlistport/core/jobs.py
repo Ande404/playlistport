@@ -18,6 +18,7 @@ APIs over a slow network and *will* be interrupted:
 from __future__ import annotations
 
 import json
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 
@@ -259,12 +260,20 @@ def fetch_stage(source: MusicProvider, job_id: int, limit: int | None = None) ->
         if limit:
             tracks = tracks[:limit]
 
-        known = {
-            (item.source_track_id, item.position)
+        # Identity is "how many times does this track appear", not "where".
+        # Keying on (track, position) looks reasonable until the source playlist
+        # changes: removing or reordering a single track shifts every position
+        # after it, and every shifted track then reads as new. One skipped track
+        # re-added 55 rows to a real job that way. Counting occurrences handles
+        # genuine duplicates — a playlist may legitimately hold a track twice —
+        # while being immune to reordering.
+        existing = Counter(
+            item.source_track_id
             for item in session.scalars(
                 select(TransferItem).where(TransferItem.job_id == job.id)
             )
-        }
+        )
+        seen: Counter[str] = Counter()
 
         # Idempotency cannot key off this job: a completed job is never reused,
         # so a re-run would otherwise start empty and write every track a second
@@ -286,8 +295,11 @@ def fetch_stage(source: MusicProvider, job_id: int, limit: int | None = None) ->
 
         added = 0
         for position, track in enumerate(tracks):
-            if not track.source_id or (track.source_id, position) in known:
+            if not track.source_id:
                 continue
+            seen[track.source_id] += 1
+            if seen[track.source_id] <= existing[track.source_id]:
+                continue  # this occurrence already has a row
             if track.source_id in already:
                 session.add(
                     TransferItem(
@@ -359,6 +371,17 @@ def match_stage(
 
         to_search: list[TransferItem] = []
         for item in pending:
+            # Nothing to search with. Left to the providers this becomes an
+            # HTTP 400 that looks transient, so the item is retried forever and
+            # the job can never complete. It is a permanent property of the
+            # track, so record it as such.
+            if not item.source_title.strip() and not json.loads(
+                item.source_artists or "[]"
+            ):
+                item.status = ItemStatus.SKIPPED.value
+                item.reason = "missing_metadata"
+                item.error = None
+                continue
             hit = cache_lookup(session, source.name, item.source_track_id, target.name)
             if hit and hit.no_match and hit.user_verified:
                 # Already answered "no counterpart exists" — do not search for
@@ -455,6 +478,36 @@ def match_stage(
 
         job.status = JobStatus.READY.value
         return job.counts()
+
+
+def finalize_job(job_id: int) -> str:
+    """Mark a job completed when nothing is outstanding.
+
+    The write path already does this, but it is skipped when there is nothing
+    to write — which is exactly the state a fully-transferred playlist ends in.
+    Without this a finished job sits at `ready` forever and `jobs` misreports
+    it as having work left.
+    """
+    with get_session() as session:
+        job = session.get(TransferJob, job_id)
+        if job is None:
+            return ""
+        outstanding = session.scalar(
+            select(TransferItem).where(
+                TransferItem.job_id == job_id,
+                TransferItem.status.in_(
+                    [
+                        ItemStatus.PENDING.value,
+                        ItemStatus.MATCHED.value,
+                        ItemStatus.NEEDS_REVIEW.value,
+                        ItemStatus.FAILED.value,
+                    ]
+                ),
+            )
+        )
+        if outstanding is None and job.status != JobStatus.PAUSED_QUOTA.value:
+            job.status = JobStatus.COMPLETED.value
+        return job.status
 
 
 def write_stage(

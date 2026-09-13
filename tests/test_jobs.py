@@ -522,6 +522,148 @@ class TestIsrcPath:
         assert target.searches == 1
 
 
+class TestSourceChanges:
+    """Re-fetching must survive the source playlist being edited.
+
+    Keying items on (track, position) meant removing one track shifted every
+    later position, and each shifted track read as new — 55 spurious rows were
+    added to a real job that way.
+    """
+
+    def _items(self, job_id):
+        from sqlalchemy import select
+
+        from playlistport.db.models import TransferItem
+        from playlistport.db.session import get_session
+
+        with get_session() as session:
+            return list(
+                session.scalars(
+                    select(TransferItem).where(TransferItem.job_id == job_id)
+                )
+            )
+
+    def test_reordering_the_source_adds_nothing(self, db):
+        from playlistport.core.jobs import create_job, fetch_stage
+
+        tracks = make_tracks(5)
+        source, target = FakeSource(tracks), FakeTarget()
+        job_id = create_job(source, target, "p1", "Test")
+        assert fetch_stage(source, job_id) == 5
+
+        reordered = list(reversed(tracks))
+        assert fetch_stage(FakeSource(reordered), job_id) == 0
+        assert len(self._items(job_id)) == 5
+
+    def test_removing_a_track_from_the_source_adds_nothing(self, db):
+        from playlistport.core.jobs import create_job, fetch_stage
+
+        tracks = make_tracks(5)
+        source, target = FakeSource(tracks), FakeTarget()
+        job_id = create_job(source, target, "p1", "Test")
+        fetch_stage(source, job_id)
+
+        # Drop the second track: every later position shifts by one.
+        assert fetch_stage(FakeSource(tracks[:1] + tracks[2:]), job_id) == 0
+        assert len(self._items(job_id)) == 5
+
+    def test_a_genuinely_new_track_is_still_added(self, db):
+        from playlistport.core.jobs import create_job, fetch_stage
+
+        tracks = make_tracks(3)
+        source, target = FakeSource(tracks), FakeTarget()
+        job_id = create_job(source, target, "p1", "Test")
+        fetch_stage(source, job_id)
+
+        extra = CanonicalTrack(
+            title="New", artists=["A"], source_id="sp-new", source_provider="spotify"
+        )
+        assert fetch_stage(FakeSource([extra] + tracks), job_id) == 1
+        assert len(self._items(job_id)) == 4
+
+    def test_a_second_copy_of_an_existing_track_is_added(self, db):
+        # A playlist may legitimately hold the same track twice, so occurrence
+        # counting must not collapse them.
+        from playlistport.core.jobs import create_job, fetch_stage
+
+        tracks = make_tracks(2)
+        source, target = FakeSource(tracks), FakeTarget()
+        job_id = create_job(source, target, "p1", "Test")
+        fetch_stage(source, job_id)
+
+        assert fetch_stage(FakeSource(tracks + [tracks[0]]), job_id) == 1
+        assert len(self._items(job_id)) == 3
+
+
+class TestFinalize:
+    def test_job_with_nothing_outstanding_is_completed(self, db):
+        from playlistport.core.jobs import finalize_job
+        from playlistport.db.models import JobStatus
+
+        job_id, _ = run_full(FakeSource(make_tracks(3)), FakeTarget())
+        assert finalize_job(job_id) == JobStatus.COMPLETED.value
+
+    def test_job_with_a_review_item_is_not_completed(self, db):
+        from sqlalchemy import select
+
+        from playlistport.core.jobs import create_job, fetch_stage, finalize_job
+        from playlistport.db.models import ItemStatus as S
+        from playlistport.db.models import JobStatus, TransferItem
+        from playlistport.db.session import get_session
+
+        source, target = FakeSource(make_tracks(1)), FakeTarget()
+        job_id = create_job(source, target, "p1", "Test")
+        fetch_stage(source, job_id)
+        with get_session() as session:
+            item = session.scalar(
+                select(TransferItem).where(TransferItem.job_id == job_id)
+            )
+            item.status = S.NEEDS_REVIEW.value
+
+        assert finalize_job(job_id) != JobStatus.COMPLETED.value
+
+
+class TestUnsearchableTracks:
+    """A real playlist contained a track with no title and no artists."""
+
+    def test_empty_metadata_is_skipped_not_searched(self, db):
+        from playlistport.core.jobs import create_job, fetch_stage, match_stage
+        from playlistport.db.models import ItemStatus as S
+
+        tracks = [
+            CanonicalTrack(
+                title="",
+                artists=[],
+                duration_ms=None,
+                source_id="sp-empty",
+                source_provider="spotify",
+            )
+        ]
+        source, target = FakeSource(tracks), FakeTarget()
+        job_id = create_job(source, target, "p1", "Test")
+        fetch_stage(source, job_id)
+        counts = match_stage(source, target, job_id, workers=1)
+
+        # Searching for nothing is an HTTP 400, which looks transient and would
+        # be retried forever, so the job could never complete.
+        assert target.searches == 0
+        assert counts.get(S.SKIPPED.value) == 1
+        assert counts.get(S.FAILED.value, 0) == 0
+
+    def test_job_with_only_unsearchable_tracks_still_completes(self, db):
+        from playlistport.db.models import JobStatus, TransferJob
+        from playlistport.db.session import get_session
+
+        tracks = [
+            CanonicalTrack(
+                title="", artists=[], source_id="sp-empty", source_provider="spotify"
+            )
+        ]
+        job_id, _ = run_full(FakeSource(tracks), FakeTarget())
+        with get_session() as session:
+            assert session.get(TransferJob, job_id).status == JobStatus.COMPLETED.value
+
+
 class TestMatchCache:
     def test_second_job_does_not_research_known_tracks(self, db):
         tracks = make_tracks(5)

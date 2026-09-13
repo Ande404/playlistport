@@ -132,6 +132,10 @@ class SpotifyProvider(MusicProvider):
             return None
         if not track.get("id"):
             return None
+        # A track with no name cannot be matched by any means, and sending an
+        # empty query to a search API is an error rather than a miss.
+        if not (track.get("name") or "").strip():
+            return None
 
         return CanonicalTrack(
             title=track.get("name") or "",
@@ -177,6 +181,8 @@ class SpotifyProvider(MusicProvider):
         """
         title = search_terms(track.title, track.artists) or track.title
         artist = track.primary_artist
+        if not (title or artist).strip():
+            return []
 
         # Progressively looser. The scoped form is precise but returns nothing
         # when the incoming YouTube "artist" is really an uploader channel; the
