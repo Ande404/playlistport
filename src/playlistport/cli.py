@@ -27,8 +27,10 @@ from .core.jobs import (
     apply_cached_decisions,
     cache_store,
     create_job,
+    drain_jobs,
     fetch_stage,
     finalize_job,
+    pending_write_queue,
     match_stage,
     write_stage,
 )
@@ -335,6 +337,51 @@ def cmd_dedupe(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_drain(args: argparse.Namespace) -> int:
+    """Write every queued job until the daily quota is exhausted.
+
+    Built for unattended runs. A scheduler invoking one playlist per day would
+    leave most of the budget unused — `reg` costs 2,550 of 10,000 — so this
+    works through the queue and stops when the platform says no more.
+    """
+    target = get_provider(args.target)
+    queue = pending_write_queue(target.name)
+
+    if not queue:
+        console.print("[green]Nothing queued to write.[/]")
+        return 0
+
+    console.print(
+        f"{len(queue)} job(s) queued · {sum(n for n, _, _ in queue)} track(s) · "
+        f"~{sum(n for n, _, _ in queue) * 50} quota units"
+    )
+    if not args.commit:
+        for count, job_id, name in queue:
+            console.print(f"  job#{job_id} {name[:32]:34} {count:4} tracks")
+        console.print("\n[yellow]Nothing written.[/] Re-run with [bold]--commit[/].")
+        return 0
+
+    def on_job(name: str, job_id: int, result: dict) -> None:
+        console.print(f"  {name[:34]:36} wrote {result['written']}")
+
+    console.print("")
+    outcome = drain_jobs(target, on_job=on_job)
+
+    if outcome["paused_on"]:
+        console.print(
+            f"\n[yellow]Quota exhausted during {outcome['paused_on']}.[/] "
+            f"{outcome['remaining']} track(s) left there, "
+            f"{outcome['jobs_untouched']} job(s) untouched. Re-run after the reset."
+        )
+    else:
+        console.print("\n[green]Queue drained.[/]")
+    console.print(
+        f"[bold]{outcome['written']}[/] track(s) written · "
+        f"{len(outcome['completed'])} playlist(s) completed"
+    )
+    return 0
+
+
 def cmd_jobs(args: argparse.Namespace) -> int:
     with get_session() as session:
         jobs = list(session.scalars(select(TransferJob).order_by(TransferJob.id.desc())))
@@ -513,6 +560,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     jobs = sub.add_parser("jobs", help="list transfer jobs")
     jobs.set_defaults(func=cmd_jobs)
+
+    drain = sub.add_parser(
+        "drain",
+        help="write all queued jobs until the daily quota runs out",
+        description=(
+            "Writes every already-matched job, cheapest first, until the target "
+            "platform's daily quota is exhausted. Intended for scheduled runs. "
+            "Nothing is written unless --commit is given."
+        ),
+    )
+    drain.add_argument("--target", default="youtube")
+    drain.add_argument(
+        "--commit", action="store_true", help="actually write to the target platform"
+    )
+    drain.set_defaults(func=cmd_drain)
 
     dedupe = sub.add_parser(
         "dedupe",

@@ -41,6 +41,19 @@ from .models import SAVED_TRACKS, Bucket, CanonicalTrack
 
 Progress = Callable[[str, int, int], None]
 
+__all__ = [
+    "apply_cached_decisions",
+    "cache_lookup",
+    "cache_store",
+    "create_job",
+    "drain_jobs",
+    "fetch_stage",
+    "finalize_job",
+    "match_stage",
+    "pending_write_queue",
+    "write_stage",
+]
+
 
 # --------------------------------------------------------------------------
 # match cache
@@ -478,6 +491,74 @@ def match_stage(
 
         job.status = JobStatus.READY.value
         return job.counts()
+
+
+def pending_write_queue(target_provider: str) -> list[tuple[int, int, str]]:
+    """Jobs with tracks ready to write, cheapest first.
+
+    Cheapest first so that a run cut short by the quota leaves finished
+    playlists behind rather than several part-done ones.
+
+    Returns (track_count, job_id, playlist_name).
+    """
+    with get_session() as session:
+        rows = []
+        for job in session.scalars(select(TransferJob)):
+            if job.target_provider != target_provider:
+                continue
+            count = sum(
+                1
+                for item in job.items
+                if item.status == ItemStatus.MATCHED.value and item.target_track_id
+            )
+            if count:
+                rows.append((count, job.id, job.source_playlist_name))
+    return sorted(rows)
+
+
+def drain_jobs(
+    target: MusicProvider,
+    on_job: Callable[[str, int, dict], None] | None = None,
+) -> dict:
+    """Write every queued job until the daily quota is exhausted.
+
+    A scheduler invoking one playlist per day would leave most of the budget
+    unused — the smallest remaining job costs 2,550 of 10,000 units — so this
+    works through the queue and stops only when the platform refuses.
+
+    Stopping is a *pause*, not a failure: the interrupted job keeps its
+    remaining items and later jobs are left untouched, so the next run resumes
+    exactly where this one stopped.
+    """
+    queue = pending_write_queue(target.name)
+    written = 0
+    completed: list[str] = []
+
+    for count, job_id, name in queue:
+        result = write_stage(target, job_id)
+        written += result["written"]
+        if on_job:
+            on_job(name, job_id, result)
+
+        if result.get("paused"):
+            return {
+                "written": written,
+                "completed": completed,
+                "paused_on": name,
+                "remaining": result["remaining"],
+                "jobs_untouched": len(queue) - len(completed) - 1,
+            }
+
+        finalize_job(job_id)
+        completed.append(name)
+
+    return {
+        "written": written,
+        "completed": completed,
+        "paused_on": None,
+        "remaining": 0,
+        "jobs_untouched": 0,
+    }
 
 
 def finalize_job(job_id: int) -> str:

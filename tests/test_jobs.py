@@ -595,6 +595,94 @@ class TestSourceChanges:
         assert len(self._items(job_id)) == 3
 
 
+class TestDrain:
+    """Unattended runs: work through the queue, stop cleanly at the quota."""
+
+    def _queue_job(self, target, name, playlist_id, n):
+        from playlistport.core.jobs import create_job, fetch_stage, match_stage
+
+        source = FakeSource(
+            [
+                CanonicalTrack(
+                    title=f"{name} {i}",
+                    artists=["A"],
+                    duration_ms=200_000,
+                    source_id=f"{playlist_id}-{i}",
+                    source_provider="spotify",
+                )
+                for i in range(n)
+            ]
+        )
+        job_id = create_job(source, target, playlist_id, name)
+        fetch_stage(source, job_id)
+        match_stage(source, target, job_id, workers=1)
+        return job_id
+
+    def test_cheapest_first(self, db):
+        from playlistport.core.jobs import pending_write_queue
+
+        target = FakeTarget()
+        self._queue_job(target, "big", "p-big", 5)
+        self._queue_job(target, "small", "p-small", 2)
+
+        queue = pending_write_queue("youtube")
+        assert [name for _, _, name in queue] == ["small", "big"]
+
+    def test_drains_everything_when_quota_allows(self, db):
+        from playlistport.core.jobs import drain_jobs
+
+        target = FakeTarget()
+        self._queue_job(target, "a", "p-a", 3)
+        self._queue_job(target, "b", "p-b", 4)
+
+        outcome = drain_jobs(target)
+        assert outcome["written"] == 7
+        assert outcome["paused_on"] is None
+        assert sorted(outcome["completed"]) == ["a", "b"]
+
+    def test_stops_at_quota_and_leaves_later_jobs_untouched(self, db):
+        from playlistport.core.jobs import drain_jobs
+
+        # Enough quota for the small job plus part of the large one.
+        target = FakeTarget(quota=5)
+        self._queue_job(target, "small", "p-small", 2)
+        self._queue_job(target, "large", "p-large", 6)
+
+        outcome = drain_jobs(target)
+        assert outcome["completed"] == ["small"]
+        assert outcome["paused_on"] == "large"
+        assert outcome["written"] == 5
+        assert len(target.written) == 5
+
+    def test_resuming_after_a_pause_writes_only_the_rest(self, db):
+        from playlistport.core.jobs import drain_jobs
+
+        target = FakeTarget(quota=4)
+        self._queue_job(target, "a", "p-a", 3)
+        self._queue_job(target, "b", "p-b", 5)
+
+        first = drain_jobs(target)
+        assert first["paused_on"] == "b"
+
+        target.quota = None  # next day
+        second = drain_jobs(target)
+        assert second["paused_on"] is None
+        assert len(target.written) == 8
+        assert len(set(target.written)) == 8, "nothing written twice"
+
+    def test_empty_queue_is_not_an_error(self, db):
+        from playlistport.core.jobs import drain_jobs
+
+        outcome = drain_jobs(FakeTarget())
+        assert outcome == {
+            "written": 0,
+            "completed": [],
+            "paused_on": None,
+            "remaining": 0,
+            "jobs_untouched": 0,
+        }
+
+
 class TestFinalize:
     def test_job_with_nothing_outstanding_is_completed(self, db):
         from playlistport.core.jobs import finalize_job

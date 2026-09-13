@@ -129,6 +129,37 @@ playlistport transfer --playlist "Roadtrip" --commit
 playlistport jobs                          # history and state
 ```
 
+### Running it on a schedule
+
+A large library takes days: YouTube allows ~198 track writes per day. `drain`
+works through every queued job, cheapest first, and stops when the quota is
+spent — so one scheduled run per day moves as much as the platform permits.
+
+```bash
+playlistport drain            # show what is queued
+playlistport drain --commit   # write until the quota runs out
+```
+
+`scripts/drain.sh` wraps it with logging, and
+`scripts/com.playlistport.drain.plist` is a launchd agent template:
+
+```bash
+sed "s|__REPO__|$PWD|g" scripts/com.playlistport.drain.plist \
+  > ~/Library/LaunchAgents/com.playlistport.drain.plist
+launchctl load ~/Library/LaunchAgents/com.playlistport.drain.plist
+```
+
+Two things worth knowing before automating:
+
+- **Use launchd, not cron.** cron skips a job entirely if the Mac was asleep at
+  the scheduled time; launchd runs it on wake.
+- **Publish your OAuth consent screen first.** While it is in *Testing*, Google
+  expires refresh tokens after **7 days**, so any schedule stops working within
+  a week. Publishing the app (it can stay unverified) removes that expiry.
+
+Scheduling the run for a time you are actually at the machine is deliberate: the
+most likely failure is an expired token, and fixing it needs a browser.
+
 Other options:
 
 ```bash

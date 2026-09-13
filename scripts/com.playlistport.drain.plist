@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd agent for daily transfer runs.
+
+  Replace __REPO__ with the absolute path to your checkout, then:
+
+      cp scripts/com.playlistport.drain.plist ~/Library/LaunchAgents/
+      launchctl load ~/Library/LaunchAgents/com.playlistport.drain.plist
+
+  WHY THESE TIMES
+
+  The YouTube quota resets at midnight US/Pacific. The obvious schedule is
+  just after that, but the better one is *while you are at the machine*:
+
+    * A laptop is usually asleep at 03:00. launchd does run a missed job on
+      wake (cron does not, which is why this is not a crontab), but firing
+      while you are present is more predictable.
+    * The likeliest unattended failure is an expired Google refresh token,
+      and recovering from it needs a browser. Failing at 03:00 means noticing
+      hours later; failing at 11:00 means noticing now.
+    * By late morning anywhere in the US the Pacific reset has long passed,
+      so the full daily budget is available.
+
+  Several times are listed because `drain` is idempotent: the first run of the
+  day does the work, and the rest exit in seconds once the quota is spent.
+  They exist to cover a machine that was asleep, or a run that failed
+  transiently.
+
+  Times are LOCAL. These suit an 11:00-17:00 US/Eastern day; adjust to yours.
+
+  Remove with:
+      launchctl unload ~/Library/LaunchAgents/com.playlistport.drain.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.playlistport.drain</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__REPO__/scripts/drain.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key><integer>11</integer>
+            <key>Minute</key><integer>15</integer>
+        </dict>
+        <dict>
+            <key>Hour</key><integer>14</integer>
+            <key>Minute</key><integer>15</integer>
+        </dict>
+        <dict>
+            <key>Hour</key><integer>16</integer>
+            <key>Minute</key><integer>45</integer>
+        </dict>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+
+    <key>StandardOutPath</key>
+    <string>__REPO__/.data/logs/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO__/.data/logs/launchd.err.log</string>
+
+    <!-- Do not fire on load; the schedule decides. -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <!-- Never wake the machine for this. If it is asleep, the run happens
+         when you next open it, which is exactly when you want it. -->
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
