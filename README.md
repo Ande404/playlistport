@@ -73,11 +73,18 @@ python3 -m venv .venv
 .venv/bin/pip install .
 ```
 
-> **Developing on Python 3.14?** `pip install -e .` is silently broken there:
-> 3.14's `site` module skips `.pth` files whose names begin with `_`, which is
-> exactly how setuptools names editable path hooks. `pip list` shows the package
-> installed while every import fails with `ModuleNotFoundError`. Either install
-> non-editable as above, or prefix commands with `PYTHONPATH=src`.
+> **If an editable install imports nothing on macOS**, check the `.pth` file's
+> flags rather than your Python version. Python 3.14's `site` skips `.pth`
+> files carrying the macOS `UF_HIDDEN` flag, and some sync and backup tools set
+> it on files inside `site-packages`. The symptom is confusing: `pip list` shows
+> the package installed while every import fails with `ModuleNotFoundError`.
+>
+> ```bash
+> ls -lO .venv/lib/python3.*/site-packages/*.pth   # look for "hidden"
+> chflags nohidden .venv/lib/python3.*/site-packages/*.pth
+> ```
+>
+> `PYTHONPATH=src` works around it either way.
 
 ## Setup
 
