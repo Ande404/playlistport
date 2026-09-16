@@ -156,8 +156,14 @@ sed "s|__REPO__|$PWD|g" scripts/com.playlistport.drain.plist \
 launchctl load ~/Library/LaunchAgents/com.playlistport.drain.plist
 ```
 
-Two things worth knowing before automating:
+Three things worth knowing before automating:
 
+- **Do not keep the checkout in `~/Desktop`, `~/Documents` or `~/Downloads`.**
+  macOS protects those directories, and a `launchd` job does not inherit the
+  Full Disk Access your terminal has — so it cannot even read the script. The
+  failure is opaque: `/bin/bash: .../drain.sh: Operation not permitted`, exit
+  code 126, with nothing in your own logs because the script never starts.
+  Somewhere like `~/Projects` has no such restriction.
 - **Use launchd, not cron.** cron skips a job entirely if the Mac was asleep at
   the scheduled time; launchd runs it on wake.
 - **Publish your OAuth consent screen first.** While it is in *Testing*, Google
