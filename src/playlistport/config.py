@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,6 +12,26 @@ from dotenv import load_dotenv
 load_dotenv()
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def interactive_session() -> bool:
+    """Whether a human could complete a browser-based authorization now.
+
+    OAuth flows block until someone finishes them in a browser. Under a
+    scheduler that is an indefinite hang rather than an error, so every auth
+    path checks this first and fails loudly instead.
+
+    `PLAYLISTPORT_INTERACTIVE` forces the answer either way, for terminals this
+    misdetects and for testing an unattended path deliberately.
+    """
+    forced = os.getenv("PLAYLISTPORT_INTERACTIVE")
+    if forced is not None:
+        return forced.strip().lower() in {"1", "true", "yes"}
+    try:
+        return sys.stdin.isatty() and sys.stdout.isatty()
+    except (AttributeError, ValueError):
+        return False
+
 
 
 def _path(env_key: str, default: str) -> Path:

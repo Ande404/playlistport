@@ -22,7 +22,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from ..config import load_config
+from ..config import interactive_session, load_config
 from ..core.models import Candidate, CanonicalTrack, PlaylistEntry, PlaylistRef
 from ..core.normalize import canonical_title, search_terms, split_artists
 from .base import AuthRequired, MusicProvider, ProviderError, QuotaExceeded
@@ -48,6 +48,9 @@ ENRICH_ATTEMPTS = 3
 TRANSIENT_STATUSES = frozenset({409, 500, 502, 503, 504})
 WRITE_ATTEMPTS = 4
 WRITE_BACKOFF = 1.0
+
+#: Even interactively, never wait forever for a browser callback.
+AUTH_TIMEOUT = 300
 
 #: Channel-name suffixes YouTube appends that are never part of an artist name.
 _CHANNEL_NOISE_RE = re.compile(r"\s*-\s*topic\s*$|\bvevo\b", re.IGNORECASE)
@@ -135,10 +138,28 @@ class YouTubeProvider(MusicProvider):
                 creds = None
 
         if not creds or not creds.valid:
+            # The browser flow blocks until someone completes it in a browser.
+            # Unattended -- a launchd job, a cron entry, CI -- that is not a
+            # failure but an indefinite hang: the process sits holding port 8080
+            # forever, and a scheduler that will not start a second copy is
+            # blocked behind it. One expired token silently swallowed three days
+            # of scheduled runs that way. Fail loudly instead; a human with a
+            # terminal can run `playlistport auth youtube`.
+            if not interactive_session():
+                raise AuthRequired(
+                    "Google credentials are missing or expired and there is no "
+                    "terminal to authorize in. Run 'playlistport auth youtube' "
+                    "interactively.\n"
+                    "To stop this recurring every 7 days, publish the OAuth "
+                    "consent screen: while it is in Testing, Google expires "
+                    "refresh tokens after a week."
+                )
             flow = InstalledAppFlow.from_client_secrets_file(
                 str(self._config.google_client_secrets_file), SCOPES
             )
-            creds = flow.run_local_server(port=8080, prompt="consent")
+            creds = flow.run_local_server(
+                port=8080, prompt="consent", timeout_seconds=AUTH_TIMEOUT
+            )
             cache.write_text(creds.to_json())
 
         return creds

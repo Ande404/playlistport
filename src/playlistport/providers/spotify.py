@@ -7,7 +7,7 @@ import time
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
-from ..config import load_config
+from ..config import interactive_session, load_config
 from ..core.models import Candidate, CanonicalTrack, PlaylistEntry, PlaylistRef
 from ..core.normalize import canonical_isrc, search_terms
 from .base import AuthRequired, MusicProvider, ProviderError
@@ -42,13 +42,22 @@ class SpotifyProvider(MusicProvider):
     @property
     def client(self) -> spotipy.Spotify:
         if self._client is None:
+            # Unattended, a browser flow hangs rather than fails: spotipy
+            # would open a browser nobody sees and then wait on stdin. Refuse
+            # to start one unless a human is present to finish it.
+            interactive = interactive_session()
+            if not interactive and not self._config.spotify_token_cache.exists():
+                raise AuthRequired(
+                    "No cached Spotify credentials and no terminal to authorize "
+                    "in. Run 'playlistport auth spotify' interactively."
+                )
             auth = SpotifyOAuth(
                 client_id=self._config.spotify_client_id,
                 client_secret=self._config.spotify_client_secret,
                 redirect_uri=self._config.spotify_redirect_uri,
                 scope=SCOPES,
                 cache_path=str(self._config.spotify_token_cache),
-                open_browser=True,
+                open_browser=interactive,
             )
             self._client = spotipy.Spotify(auth_manager=auth, retries=3)
         return self._client
