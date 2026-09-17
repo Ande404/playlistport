@@ -35,7 +35,12 @@ from ..db.models import (
     utcnow,
 )
 from ..db.session import get_session
-from ..providers.base import MusicProvider, ProviderError, QuotaExceeded
+from ..providers.base import (
+    AuthRequired,
+    MusicProvider,
+    ProviderError,
+    QuotaExceeded,
+)
 from .matcher import DEFAULT_CONFIG, MatchConfig, match
 from .models import SAVED_TRACKS, Bucket, CanonicalTrack
 
@@ -47,6 +52,7 @@ __all__ = [
     "cache_store",
     "create_job",
     "drain_jobs",
+    "is_writable",
     "fetch_stage",
     "finalize_job",
     "match_stage",
@@ -493,6 +499,21 @@ def match_stage(
         return job.counts()
 
 
+def is_writable(item: TransferItem) -> bool:
+    """Whether this item is something `write_stage` will attempt.
+
+    The queue and the writer must agree on this. They did not: the queue
+    counted only MATCHED while the writer also retries FAILED items that still
+    know their target. A playlist whose items had all been marked failed
+    therefore vanished from the queue while remaining perfectly writable, and
+    under automation would never have completed.
+    """
+    return bool(
+        item.target_track_id
+        and item.status in {ItemStatus.MATCHED.value, ItemStatus.FAILED.value}
+    )
+
+
 def pending_write_queue(target_provider: str) -> list[tuple[int, int, str]]:
     """Jobs with tracks ready to write, cheapest first.
 
@@ -506,11 +527,7 @@ def pending_write_queue(target_provider: str) -> list[tuple[int, int, str]]:
         for job in session.scalars(select(TransferJob)):
             if job.target_provider != target_provider:
                 continue
-            count = sum(
-                1
-                for item in job.items
-                if item.status == ItemStatus.MATCHED.value and item.target_track_id
-            )
+            count = sum(1 for item in job.items if is_writable(item))
             if count:
                 rows.append((count, job.id, job.source_playlist_name))
     return sorted(rows)
@@ -540,13 +557,17 @@ def drain_jobs(
         if on_job:
             on_job(name, job_id, result)
 
-        if result.get("paused"):
+        if result.get("paused") or result.get("auth_required"):
+            # Auth stops the whole run, not just this job: every remaining job
+            # would hit the same wall and, before this, would have had its
+            # tracks marked failed on the way through.
             return {
                 "written": written,
                 "completed": completed,
                 "paused_on": name,
                 "remaining": result["remaining"],
                 "jobs_untouched": len(queue) - len(completed) - 1,
+                "auth_required": bool(result.get("auth_required")),
             }
 
         finalize_job(job_id)
@@ -558,6 +579,7 @@ def drain_jobs(
         "paused_on": None,
         "remaining": 0,
         "jobs_untouched": 0,
+        "auth_required": False,
     }
 
 
@@ -702,6 +724,19 @@ def write_stage(
                 job.error = str(exc)
                 session.commit()
                 return {"written": written, "remaining": total - written, "paused": 1}
+            except AuthRequired as exc:
+                # Expired credentials are a condition of the run, not a property
+                # of any track. Falling through to the per-batch handler below
+                # marked 111 perfectly good tracks as failed, one batch at a
+                # time, each stamped with the same auth error. Stop instead.
+                job.error = str(exc)
+                session.commit()
+                return {
+                    "written": written,
+                    "remaining": total - written,
+                    "paused": 0,
+                    "auth_required": 1,
+                }
             except ProviderError as exc:
                 for item in batch:
                     item.status = ItemStatus.FAILED.value

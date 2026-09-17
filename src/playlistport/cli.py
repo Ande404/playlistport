@@ -367,7 +367,12 @@ def cmd_drain(args: argparse.Namespace) -> int:
     console.print("")
     outcome = drain_jobs(target, on_job=on_job)
 
-    if outcome["paused_on"]:
+    if outcome.get("auth_required"):
+        console.print(
+            f"\n[red]Stopped during {outcome['paused_on']}: authorization "
+            "required.[/] Run 'playlistport auth youtube' in a terminal."
+        )
+    elif outcome["paused_on"]:
         console.print(
             f"\n[yellow]Quota exhausted during {outcome['paused_on']}.[/] "
             f"{outcome['remaining']} track(s) left there, "

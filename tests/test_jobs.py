@@ -680,6 +680,7 @@ class TestDrain:
             "paused_on": None,
             "remaining": 0,
             "jobs_untouched": 0,
+            "auth_required": False,
         }
 
 
@@ -767,3 +768,116 @@ class TestMatchCache:
         fetch_stage(source2, job2)
         match_stage(source2, target, job2, workers=2)
         assert target.searches == 5, "cache should have served every track"
+
+
+class AuthFailingTarget(FakeTarget):
+    """Credentials expire partway through a run."""
+
+    def __init__(self, fail_after=0):
+        super().__init__()
+        self.fail_after = fail_after
+
+    def add_tracks(self, playlist_id, track_ids):
+        if len(self.written) >= self.fail_after:
+            from playlistport.providers.base import AuthRequired
+
+            raise AuthRequired("credentials expired")
+        self.written.extend(track_ids)
+
+
+class TestAuthFailureDuringWrite:
+    """An expired token is a condition of the run, not a fault of the tracks."""
+
+    def test_tracks_are_not_blamed_for_an_auth_failure(self, db):
+        from playlistport.db.models import ItemStatus as S
+
+        source, target = FakeSource(make_tracks(6)), AuthFailingTarget(fail_after=2)
+        job_id, result = run_full(source, target)
+
+        assert result.get("auth_required") == 1
+        counts = self._counts(job_id)
+        # Before the fix every remaining track was stamped FAILED with the same
+        # auth error, one batch at a time.
+        assert counts.get(S.FAILED.value, 0) == 0
+        assert counts.get(S.MATCHED.value) == 4
+        assert counts.get(S.WRITTEN.value) == 2
+
+    def test_drain_stops_rather_than_walking_into_the_same_wall(self, db):
+        from playlistport.core.jobs import drain_jobs
+
+        target = AuthFailingTarget(fail_after=1)
+        TestDrain()._queue_job(target, "a", "p-a", 2)
+        TestDrain()._queue_job(target, "b", "p-b", 3)
+
+        outcome = drain_jobs(target)
+        assert outcome["auth_required"] is True
+        assert outcome["completed"] == []
+        assert len(target.written) == 1
+
+    def test_work_survives_and_resumes_after_reauthorization(self, db):
+        from playlistport.core.jobs import write_stage
+
+        source, target = FakeSource(make_tracks(5)), AuthFailingTarget(fail_after=2)
+        job_id, _ = run_full(source, target)
+
+        target.fail_after = 999  # re-authorized
+        result = write_stage(target, job_id)
+        assert result["written"] == 3
+        assert len(set(target.written)) == 5
+
+    def _counts(self, job_id):
+        from collections import Counter
+
+        from playlistport.db.models import TransferJob
+        from playlistport.db.session import get_session
+
+        with get_session() as session:
+            return Counter(i.status for i in session.get(TransferJob, job_id).items)
+
+
+class TestQueueMatchesWriter:
+    """The queue and the writer must agree on what is writable."""
+
+    def test_a_job_of_failed_items_stays_in_the_queue(self, db):
+        # A playlist whose items were all marked FAILED vanished from the drain
+        # queue while remaining perfectly writable, so automation would never
+        # have finished it.
+        from sqlalchemy import select
+
+        from playlistport.core.jobs import drain_jobs, pending_write_queue
+        from playlistport.db.models import ItemStatus as S
+        from playlistport.db.models import TransferItem
+        from playlistport.db.session import get_session
+
+        target = FakeTarget()
+        job_id = TestDrain()._queue_job(target, "stranded", "p-s", 4)
+        with get_session() as session:
+            for item in session.scalars(
+                select(TransferItem).where(TransferItem.job_id == job_id)
+            ):
+                item.status = S.FAILED.value
+                item.error = "transient"
+
+        assert [n for n, _, _ in pending_write_queue("youtube")] == [4]
+        outcome = drain_jobs(target)
+        assert outcome["written"] == 4
+        assert outcome["completed"] == ["stranded"]
+
+    def test_items_without_a_target_are_not_counted(self, db):
+        from sqlalchemy import select
+
+        from playlistport.core.jobs import pending_write_queue
+        from playlistport.db.models import ItemStatus as S
+        from playlistport.db.models import TransferItem
+        from playlistport.db.session import get_session
+
+        target = FakeTarget()
+        job_id = TestDrain()._queue_job(target, "x", "p-x", 2)
+        with get_session() as session:
+            for item in session.scalars(
+                select(TransferItem).where(TransferItem.job_id == job_id)
+            ):
+                item.status = S.FAILED.value
+                item.target_track_id = None  # search failed; nothing to write
+
+        assert pending_write_queue("youtube") == []
