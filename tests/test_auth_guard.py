@@ -93,3 +93,72 @@ class TestSpotifyAuthGuard:
 
         with pytest.raises(AuthRequired, match="no terminal"):
             _ = SpotifyProvider().client
+
+
+class TestTransportErrorRetry:
+    """A dropped connection must not kill a run.
+
+    A scheduled transfer died mid-playlist on `ConnectionResetError: [Errno 54]`.
+    It never reached the HttpError handler because it is not an API response at
+    all, so it propagated out of the entire drain.
+    """
+
+    def _provider(self):
+        from playlistport.providers.youtube import YouTubeProvider
+
+        return YouTubeProvider.__new__(YouTubeProvider)
+
+    def test_transport_errors_are_classified(self):
+        import http.client
+        import ssl
+
+        from playlistport.providers.youtube import TRANSPORT_ERRORS
+
+        for exc in (
+            ConnectionResetError,
+            ConnectionAbortedError,
+            TimeoutError,
+            ssl.SSLError,
+            http.client.RemoteDisconnected,
+            http.client.IncompleteRead,
+        ):
+            assert issubclass(exc, TRANSPORT_ERRORS), exc
+
+    def test_a_reset_connection_is_retried_then_succeeds(self, monkeypatch):
+        import playlistport.providers.youtube as yt
+
+        monkeypatch.setattr(yt.time, "sleep", lambda _s: None)
+        provider = self._provider()
+        provider.quota_used = 0
+
+        class Request:
+            def __init__(self):
+                self.calls = 0
+
+            def execute(self):
+                self.calls += 1
+                if self.calls < 3:
+                    raise ConnectionResetError(54, "Connection reset by peer")
+                return {"ok": True}
+
+        request = Request()
+        assert provider._execute(request, 50) == {"ok": True}
+        assert request.calls == 3
+        assert provider.quota_used == 50, "only the successful call costs quota"
+
+    def test_persistent_connection_failure_raises_provider_error(self, monkeypatch):
+        import playlistport.providers.youtube as yt
+        from playlistport.providers.base import ProviderError
+
+        monkeypatch.setattr(yt.time, "sleep", lambda _s: None)
+        provider = self._provider()
+        provider.quota_used = 0
+
+        class AlwaysReset:
+            def execute(self):
+                raise ConnectionResetError(54, "Connection reset by peer")
+
+        # Must surface as ProviderError so the job engine handles it, rather
+        # than escaping as a bare OSError and aborting the whole run.
+        with pytest.raises(ProviderError, match="connection failed"):
+            provider._execute(AlwaysReset(), 50)

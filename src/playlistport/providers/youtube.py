@@ -17,6 +17,7 @@ YT_WRITE_MODE=ytmusicapi to bypass it (requires browser auth headers).
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import time
@@ -46,6 +47,11 @@ ENRICH_WORKERS = 6
 ENRICH_ATTEMPTS = 3
 
 TRANSIENT_STATUSES = frozenset({409, 500, 502, 503, 504})
+
+#: Connection-level failures, which arrive as exceptions rather than as a
+#: response. OSError covers ConnectionResetError, TimeoutError and the
+#: socket errors; HTTPException covers RemoteDisconnected and IncompleteRead.
+TRANSPORT_ERRORS = (OSError, http.client.HTTPException)
 WRITE_ATTEMPTS = 4
 WRITE_BACKOFF = 1.0
 
@@ -186,6 +192,19 @@ class YouTubeProvider(MusicProvider):
         for attempt in range(WRITE_ATTEMPTS):
             try:
                 result = request.execute()
+            except TRANSPORT_ERRORS as exc:
+                # A dropped connection is not an API response, so it never
+                # reaches the HttpError handler below and used to propagate out
+                # of the whole run: a single "Connection reset by peer" killed a
+                # scheduled transfer mid-playlist. These are the most transient
+                # failures there are -- retry them.
+                if attempt == WRITE_ATTEMPTS - 1:
+                    raise ProviderError(
+                        f"YouTube connection failed after {WRITE_ATTEMPTS} "
+                        f"attempts: {exc!r}"
+                    ) from exc
+                time.sleep(WRITE_BACKOFF * (2**attempt))
+                continue
             except HttpError as exc:
                 reason = ""
                 try:
